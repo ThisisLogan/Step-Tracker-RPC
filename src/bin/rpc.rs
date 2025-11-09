@@ -10,17 +10,18 @@ fn get_api_url() -> String {
         .expect("API_URL must be set in .env file")
 }
 
-// Get Discord Client ID from environment variable or use default
+// Get Discord Client ID from environment variable
 fn get_discord_client_id() -> u64 {
     env::var("DISCORD_CLIENT_ID")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1428159322432471223)
+        .expect("DISCORD_CLIENT_ID must be set in .env file")
+        .parse()
+        .expect("DISCORD_CLIENT_ID must be a valid u64")
 }
 
-// Get image key from environment variable, default to configured value
+// Get image key from environment variable
 fn get_large_image_key() -> String {
-    env::var("DISCORD_LARGE_IMAGE_KEY").unwrap_or_else(|_| "man_walking_emoji_copy".to_string())
+    env::var("DISCORD_LARGE_IMAGE_KEY")
+        .expect("DISCORD_LARGE_IMAGE_KEY must be set in .env file")
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
