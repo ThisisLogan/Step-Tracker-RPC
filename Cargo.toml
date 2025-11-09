@@ -1,0 +1,17 @@
+[package]
+name = "discord-rpc"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rpc"
+path = "src/bin/rpc.rs"
+
+[dependencies]
+# RPC client dependencies
+discord-rpc-client = "0.4.0"
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+dotenv = "0.15"
