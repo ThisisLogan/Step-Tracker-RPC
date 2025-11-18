@@ -190,9 +190,9 @@ fn fetch_steps_summary(api_url: &str, token: &str) -> Result<StepsSummaryRespons
 
 fn format_number(n: i64) -> String {
     if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
+        format!("{:.2}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
+        format!("{:.2}K", n as f64 / 1_000.0)
     } else {
         format!("{}", n)
     }
