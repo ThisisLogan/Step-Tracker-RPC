@@ -36,6 +36,16 @@ pub struct StepsSummaryResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct WaterSummaryResponse {
+    pub daily_ml: i64,
+    pub monthly_ml: i64,
+    pub yearly_ml: i64,
+    pub daily_display: String,
+    pub monthly_display: String,
+    pub yearly_display: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
 }

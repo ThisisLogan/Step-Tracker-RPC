@@ -10,18 +10,48 @@ fn get_api_url() -> String {
         .expect("API_URL must be set in .env file")
 }
 
-// Get Discord Client ID from environment variable
-fn get_discord_client_id() -> u64 {
-    env::var("DISCORD_CLIENT_ID")
-        .expect("DISCORD_CLIENT_ID must be set in .env file")
+// Get Steps Discord Client ID from environment variable
+fn get_steps_discord_client_id() -> u64 {
+    env::var("STEPS_DISCORD_CLIENT_ID")
+        .expect("STEPS_DISCORD_CLIENT_ID must be set in .env file")
         .parse()
-        .expect("DISCORD_CLIENT_ID must be a valid u64")
+        .expect("STEPS_DISCORD_CLIENT_ID must be a valid u64")
 }
 
-// Get image key from environment variable
-fn get_large_image_key() -> String {
-    env::var("DISCORD_LARGE_IMAGE_KEY")
-        .expect("DISCORD_LARGE_IMAGE_KEY must be set in .env file")
+// Get Steps image key from environment variable
+fn get_steps_large_image_key() -> String {
+    env::var("STEPS_DISCORD_LARGE_IMAGE_KEY")
+        .expect("STEPS_DISCORD_LARGE_IMAGE_KEY must be set in .env file")
+}
+
+// Get Water Discord Client ID from environment variable
+fn get_water_discord_client_id() -> u64 {
+    env::var("WATER_DISCORD_CLIENT_ID")
+        .expect("WATER_DISCORD_CLIENT_ID must be set in .env file")
+        .parse()
+        .expect("WATER_DISCORD_CLIENT_ID must be a valid u64")
+}
+
+// Get Water image key from environment variable
+fn get_water_large_image_key() -> String {
+    env::var("WATER_DISCORD_LARGE_IMAGE_KEY")
+        .expect("WATER_DISCORD_LARGE_IMAGE_KEY must be set in .env file")
+}
+
+// Check if steps activity is enabled (default: true)
+fn is_steps_enabled() -> bool {
+    env::var("ENABLE_STEPS")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase()
+        == "true"
+}
+
+// Check if water activity is enabled (default: true)
+fn is_water_enabled() -> bool {
+    env::var("ENABLE_WATER")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase()
+        == "true"
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,120 +82,274 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get configuration from environment
     let api_url = get_api_url();
-    let discord_client_id = get_discord_client_id();
-    let large_image_key = get_large_image_key();
+    let steps_discord_client_id = get_steps_discord_client_id();
+    let steps_large_image_key = get_steps_large_image_key();
+    let water_discord_client_id = get_water_discord_client_id();
+    let water_large_image_key = get_water_large_image_key();
+    let steps_enabled = is_steps_enabled();
+    let water_enabled = is_water_enabled();
 
     println!("Connecting to API: {}", api_url);
-    println!("Using Discord Client ID: {}", discord_client_id);
+    println!("Using Steps Discord Client ID: {} (enabled: {})", steps_discord_client_id, steps_enabled);
+    println!("Using Water Discord Client ID: {} (enabled: {})", water_discord_client_id, water_enabled);
 
-    // Main loop with reconnection logic
+    // Main loop with reconnection logic - alternate between steps and water
     loop {
-        match run_rpc_client(&api_url, &token, discord_client_id, &large_image_key) {
+        // Run both RPC clients, alternating updates
+        match run_dual_rpc_clients(
+            &api_url,
+            &token,
+            steps_discord_client_id,
+            &steps_large_image_key,
+            steps_enabled,
+            water_discord_client_id,
+            &water_large_image_key,
+            water_enabled,
+        ) {
             Ok(_) => {
-                eprintln!("Discord RPC client exited normally. Restarting in 5 seconds...");
+                eprintln!("RPC clients exited normally. Restarting in 5 seconds...");
                 thread::sleep(Duration::from_secs(5));
             }
             Err(e) => {
-                eprintln!("Discord RPC client error: {}. Restarting in 5 seconds...", e);
+                eprintln!("RPC client error: {}. Restarting in 5 seconds...", e);
                 thread::sleep(Duration::from_secs(5));
             }
         }
     }
 }
 
-fn run_rpc_client(
+fn run_dual_rpc_clients(
     api_url: &str,
     token: &str,
-    discord_client_id: u64,
-    large_image_key: &str,
+    steps_discord_client_id: u64,
+    steps_large_image_key: &str,
+    steps_enabled: bool,
+    water_discord_client_id: u64,
+    water_large_image_key: &str,
+    water_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Create Discord RPC client
-    let mut drpc = Client::new(discord_client_id);
+    // Only create clients if they're enabled
+    let mut steps_drpc_opt = if steps_enabled {
+        let mut drpc = Client::new(steps_discord_client_id);
+        drpc.on_ready(|_ctx| {
+            println!("Steps Discord RPC connected!");
+        });
+        drpc.on_event(Event::Ready, |_ctx| {
+            println!("Steps Discord RPC ready!");
+        });
+        drpc.start();
+        Some(drpc)
+    } else {
+        println!("Steps RPC is disabled");
+        None
+    };
 
-    // Register event handlers
-    drpc.on_ready(|_ctx| {
-        println!("Discord RPC connected!");
-    });
-
-    drpc.on_event(Event::Ready, |_ctx| {
-        println!("Discord RPC ready!");
-    });
-
-    // Start up the client connection
-    drpc.start();
+    let mut water_drpc_opt = if water_enabled {
+        let mut drpc = Client::new(water_discord_client_id);
+        drpc.on_ready(|_ctx| {
+            println!("Water Discord RPC connected!");
+        });
+        drpc.on_event(Event::Ready, |_ctx| {
+            println!("Water Discord RPC ready!");
+        });
+        drpc.start();
+        Some(drpc)
+    } else {
+        println!("Water RPC is disabled");
+        None
+    };
 
     // Give Discord RPC a moment to connect
     thread::sleep(Duration::from_secs(2));
 
-    // Main loop: fetch steps and update RPC status
+    // Determine which activity to show first
+    // If only one is enabled, always show that one
+    // If both are enabled, start with steps
+    let mut show_steps = if steps_enabled && !water_enabled {
+        true // Only steps enabled
+    } else if water_enabled && !steps_enabled {
+        false // Only water enabled
+    } else {
+        true // Both enabled, start with steps
+    };
+
+    // Main loop: alternate between updating steps and water
     loop {
-        match fetch_steps_summary(api_url, token) {
-            Ok(summary) => {
-                let (start_timestamp, end_timestamp) = get_day_timestamps();
-                let details = format!("Today: {}", format_number(summary.daily));
-                let state = format!(
-                    "Monthly: {} | Yearly: {}",
-                    format_number(summary.monthly),
-                    format_number(summary.yearly)
-                );
-                
-                println!(
-                    "Fetched steps - Today: {}, Monthly: {}, Yearly: {}",
-                    summary.daily, summary.monthly, summary.yearly
-                );
+        if show_steps && steps_enabled {
+            println!("🔄 Switching to Steps RPC...");
+            
+            // Set steps activity first (before clearing water)
+            match fetch_steps_summary(api_url, token) {
+                Ok(summary) => {
+                    let (start_timestamp, end_timestamp) = get_day_timestamps();
+                    let details = format!("Today: {}", format_number(summary.daily));
+                    let state = format!(
+                        "Monthly: {} | Yearly: {}",
+                        format_number(summary.monthly),
+                        format_number(summary.yearly)
+                    );
+                    
+                    println!(
+                        "Fetched steps - Today: {}, Monthly: {}, Yearly: {}",
+                        summary.daily, summary.monthly, summary.yearly
+                    );
 
-                // Try to set activity, but don't crash if it fails
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    drpc.set_activity(|act| {
-                        let mut activity = act.state(&state)
-                            .details(&details)
-                            .timestamps(|timestamps| {
-                                timestamps.start(start_timestamp).end(end_timestamp)
-                            });
-                        
-                        // Add image if configured
-                        if !large_image_key.is_empty() {
-                            activity = activity.assets(|assets| {
-                                assets.large_image(large_image_key)
-                                    .large_text("I'm walking here!")
-                            });
+                    if let Some(ref mut steps_drpc) = steps_drpc_opt {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            steps_drpc.set_activity(|act| {
+                                let mut activity = act.state(&state)
+                                    .details(&details)
+                                    .timestamps(|timestamps| {
+                                        timestamps.start(start_timestamp).end(end_timestamp)
+                                    });
+                                
+                                if !steps_large_image_key.is_empty() {
+                                    activity = activity.assets(|assets| {
+                                        assets.large_image(steps_large_image_key)
+                                            .large_text("I'm walking here!")
+                                    });
+                                }
+                                
+                                activity
+                            })
+                        }));
+
+                        match result {
+                            Ok(Ok(_)) => {
+                                println!("✅ Steps activity set successfully");
+                                // Now clear water activity after setting steps
+                                if water_enabled {
+                                    if let Some(ref mut water_drpc) = water_drpc_opt {
+                                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                            let _ = water_drpc.clear_activity();
+                                        }));
+                                    }
+                                }
+                                // Switch to water next only if water is enabled
+                                if water_enabled {
+                                    show_steps = false;
+                                }
+                                // If water is disabled, stay on steps
+                            }
+                            Ok(Err(e)) => {
+                                eprintln!("Failed to set steps activity: {}", e);
+                                return Err(format!("Steps Discord RPC connection lost: {}", e).into());
+                            }
+                            Err(_) => {
+                                eprintln!("Panic caught while setting steps activity. Reconnecting...");
+                                return Err("Panic in set_activity".into());
+                            }
                         }
-                        
-                        activity
-                    })
-                }));
-
-                match result {
-                    Ok(Ok(_)) => {
-                        // Success
                     }
-                    Ok(Err(e)) => {
-                        eprintln!("Failed to set activity: {}", e);
-                        // If we can't set activity, the connection might be lost
-                        // Return error to trigger reconnection
-                        return Err(format!("Discord RPC connection lost: {}", e).into());
+                }
+                Err(e) => {
+                    eprintln!("Error fetching steps: {}", e);
+                    if let Some(ref mut steps_drpc) = steps_drpc_opt {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            steps_drpc.set_activity(|act| {
+                                act.state("Unable to fetch steps").details("API connection error")
+                            })
+                        }));
                     }
-                    Err(_) => {
-                        eprintln!("Panic caught while setting activity. Reconnecting...");
-                        return Err("Panic in set_activity".into());
+                    // Switch to water even on error, but only if water is enabled
+                    if water_enabled {
+                        show_steps = false;
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("Error fetching steps: {}", e);
-                // Try to set error state, but don't crash if it fails
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    drpc.set_activity(|act| {
-                        act.state("Unable to fetch steps").details("API connection error")
-                    })
-                }));
+        } else if !show_steps && water_enabled {
+            println!("🔄 Switching to Water RPC...");
+            
+            // Set water activity first (before clearing steps)
+            match fetch_water_summary(api_url, token) {
+                Ok(summary) => {
+                    let (start_timestamp, end_timestamp) = get_day_timestamps();
+                    let details = format!("Today: {}", summary.daily_display);
+                    let state = format!(
+                        "Monthly: {} | Yearly: {}",
+                        summary.monthly_display,
+                        summary.yearly_display
+                    );
+                    
+                    println!(
+                        "Fetched water - Today: {}, Monthly: {}, Yearly: {}",
+                        summary.daily_display, summary.monthly_display, summary.yearly_display
+                    );
+
+                    if let Some(ref mut water_drpc) = water_drpc_opt {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            water_drpc.set_activity(|act| {
+                                let mut activity = act.state(&state)
+                                    .details(&details)
+                                    .timestamps(|timestamps| {
+                                        timestamps.start(start_timestamp).end(end_timestamp)
+                                    });
+                                
+                                if !water_large_image_key.is_empty() {
+                                    activity = activity.assets(|assets| {
+                                        assets.large_image(water_large_image_key)
+                                            .large_text("Staying hydrated!")
+                                    });
+                                }
+                                
+                                activity
+                            })
+                        }));
+
+                        match result {
+                            Ok(Ok(_)) => {
+                                println!("✅ Water activity set successfully");
+                                // Now clear steps activity after setting water
+                                if steps_enabled {
+                                    if let Some(ref mut steps_drpc) = steps_drpc_opt {
+                                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                            let _ = steps_drpc.clear_activity();
+                                        }));
+                                    }
+                                }
+                                // Switch to steps next only if steps is enabled
+                                if steps_enabled {
+                                    show_steps = true;
+                                }
+                                // If steps is disabled, stay on water
+                            }
+                            Ok(Err(e)) => {
+                                eprintln!("Failed to set water activity: {}", e);
+                                return Err(format!("Water Discord RPC connection lost: {}", e).into());
+                            }
+                            Err(_) => {
+                                eprintln!("Panic caught while setting water activity. Reconnecting...");
+                                return Err("Panic in set_activity".into());
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error fetching water: {}", e);
+                    if let Some(ref mut water_drpc) = water_drpc_opt {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            water_drpc.set_activity(|act| {
+                                act.state("Unable to fetch water").details("API connection error")
+                            })
+                        }));
+                    }
+                    // Switch to steps even on error, but only if steps is enabled
+                    if steps_enabled {
+                        show_steps = true;
+                    }
+                }
             }
+        } else {
+            // Both disabled or invalid state - just wait
+            thread::sleep(Duration::from_secs(60));
+            continue;
         }
 
-        // Update every 30 seconds
-        thread::sleep(Duration::from_secs(30));
+        // Wait 60 seconds before next update
+        thread::sleep(Duration::from_secs(60));
     }
 }
+
 
 fn fetch_steps_summary(api_url: &str, token: &str) -> Result<StepsSummaryResponse, Box<dyn std::error::Error>> {
     let client = reqwest::blocking::Client::new();
@@ -176,6 +360,27 @@ fn fetch_steps_summary(api_url: &str, token: &str) -> Result<StepsSummaryRespons
     let status = response.status();
     if status.is_success() {
         let summary: StepsSummaryResponse = response.json()?;
+        Ok(summary)
+    } else {
+        // Try to parse error response, fallback to status code
+        let error_msg = if let Ok(error_response) = response.json::<ErrorResponse>() {
+            error_response.error
+        } else {
+            format!("HTTP {} {}", status, status.canonical_reason().unwrap_or("Unknown"))
+        };
+        Err(error_msg.into())
+    }
+}
+
+fn fetch_water_summary(api_url: &str, token: &str) -> Result<WaterSummaryResponse, Box<dyn std::error::Error>> {
+    let client = reqwest::blocking::Client::new();
+    let url = format!("{}/api/water/summary?token={}", api_url, token);
+
+    let response = client.get(&url).send()?;
+
+    let status = response.status();
+    if status.is_success() {
+        let summary: WaterSummaryResponse = response.json()?;
         Ok(summary)
     } else {
         // Try to parse error response, fallback to status code
