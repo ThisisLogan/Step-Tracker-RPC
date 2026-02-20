@@ -7,6 +7,10 @@ edition = "2021"
 name = "rpc"
 path = "src/bin/rpc.rs"
 
+[[bin]]
+name = "gui"
+path = "src/bin/gui.rs"
+
 [dependencies]
 # RPC client dependencies
 discord-rpc-client = "0.4.0"
@@ -15,3 +19,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"
 dotenv = "0.15"
+eframe = "0.33.3"
+tray-icon = "0.21.3"
+anyhow = "1.0.100"
+once_cell = "1.21.3"
+directories = "6.0.0"

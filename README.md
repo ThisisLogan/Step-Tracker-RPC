@@ -38,25 +38,66 @@ A Discord Rich Presence application that displays your daily, monthly, and yearl
 
 2. Edit the `.env` file with your configuration:
    ```env
+   # Required
    API_URL=https://steps.wlling.net
    API_TOKEN=your_api_token_here
-   DISCORD_CLIENT_ID=1428159322432471223
-   DISCORD_LARGE_IMAGE_KEY=man_walking_emoji_copy
+
+   # Enable/disable each Rich Presence (defaults: true)
+   ENABLE_STEPS=true
+   ENABLE_WATER=true
+   ENABLE_SLEEP=true
+
+   # Steps RPC (required if ENABLE_STEPS=true)
+   STEPS_DISCORD_CLIENT_ID=1428159322432471223
+   STEPS_DISCORD_LARGE_IMAGE_KEY=man_walking_emoji_copy
+
+   # Water RPC (required if ENABLE_WATER=true)
+   WATER_DISCORD_CLIENT_ID=123456789012345678
+   WATER_DISCORD_LARGE_IMAGE_KEY=water_icon_key
+
+   # Sleep RPC (required if ENABLE_SLEEP=true)
+   SLEEP_DISCORD_CLIENT_ID=123456789012345678
+   SLEEP_DISCORD_LARGE_IMAGE_KEY=sleep_icon_key
+
+   # Optional: write output files for OBS/text sources
+   # OBS_STEPS_FILE=/path/to/steps.txt
+   # OBS_WATER_FILE=/path/to/water.txt
+   # OBS_SLEEP_FILE=/path/to/sleep.txt
    ```
 
 ### Environment Variables
 
 - **`API_URL`** (required): The base URL of your step tracking API
 - **`API_TOKEN`** (required): Your API authentication token
-- **`DISCORD_CLIENT_ID`** (required): Discord application client ID (must be a valid u64)
-- **`DISCORD_LARGE_IMAGE_KEY`** (required): Discord Rich Presence large image key
+- **`ENABLE_STEPS`** (optional): `true`/`false` (default: `true`)
+- **`ENABLE_WATER`** (optional): `true`/`false` (default: `true`)
+- **`ENABLE_SLEEP`** (optional): `true`/`false` (default: `true`)
+- **`STEPS_DISCORD_CLIENT_ID`**: Discord application client ID for steps (u64)
+- **`STEPS_DISCORD_LARGE_IMAGE_KEY`**: Steps large image key
+- **`WATER_DISCORD_CLIENT_ID`**: Discord application client ID for water (u64)
+- **`WATER_DISCORD_LARGE_IMAGE_KEY`**: Water large image key
+- **`SLEEP_DISCORD_CLIENT_ID`**: Discord application client ID for sleep (u64)
+- **`SLEEP_DISCORD_LARGE_IMAGE_KEY`**: Sleep large image key
+- **`OBS_STEPS_FILE`** (optional): path to write steps text output for OBS
+- **`OBS_WATER_FILE`** (optional): path to write water text output for OBS
+- **`OBS_SLEEP_FILE`** (optional): path to write sleep text output for OBS
 
 ## Usage
 
-Run the application:
+Run the RPC (console):
 ```bash
-cargo run
+cargo run --bin rpc
 ```
+
+Run the GUI (cross-platform):
+```bash
+cargo run --bin gui
+```
+
+The GUI can:
+- Edit and save a local `.env`
+- Start/stop the `rpc` process
+- Hide to run in the background (closing the window hides it; use the tray icon menu to show/quit)
 
 The application will:
 1. Connect to your Discord client
