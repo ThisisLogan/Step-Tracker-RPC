@@ -3,7 +3,10 @@ use discord_rpc_client::{Client, Event};
 use reqwest;
 use std::{env, thread, time::Duration};
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use chrono::{Local, TimeZone, Datelike};
+
+static DISCORD_RPC_RECONNECT_NEEDED: AtomicBool = AtomicBool::new(false);
 
 // Get API URL from environment variable
 fn get_api_url() -> String {
@@ -214,6 +217,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         if message.contains("Socket is not connected") || message.contains("NotConnected") {
             eprintln!("⚠️  Discord RPC connection lost (socket not connected). This is usually harmless and will be handled by reconnection logic.");
+            DISCORD_RPC_RECONNECT_NEEDED.store(true, Ordering::SeqCst);
+        } else if message.contains("Failed to send outgoing data") {
+            eprintln!("⚠️  Discord RPC send failed. Marking clients for reconnection.");
+            DISCORD_RPC_RECONNECT_NEEDED.store(true, Ordering::SeqCst);
         } else {
             eprintln!("⚠️  Panic in Discord RPC: {}", message);
         }
@@ -254,6 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Main loop with reconnection logic - alternate between steps, water, and sleep
     loop {
+        DISCORD_RPC_RECONNECT_NEEDED.store(false, Ordering::SeqCst);
         // Run all RPC clients, alternating updates
         match run_triple_rpc_clients(
             &api_url,
@@ -366,6 +374,10 @@ fn run_triple_rpc_clients(
 
     // Main loop: cycle through steps -> water -> sleep -> repeat
     loop {
+        if DISCORD_RPC_RECONNECT_NEEDED.swap(false, Ordering::SeqCst) {
+            return Err("Detected Discord RPC background disconnect; reconnecting clients".into());
+        }
+
         match current_activity {
             0 if steps_enabled => {
                 println!("🔄 Switching to Steps RPC...");
@@ -413,16 +425,8 @@ fn run_triple_rpc_clients(
                                 Ok(Ok(_)) => {
                                     println!("✅ Steps activity set successfully");
                                     // Clear other activities
-                                    if let Some(ref mut water_drpc) = water_drpc_opt {
-                                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                            let _ = water_drpc.clear_activity();
-                                        }));
-                                    }
-                                    if let Some(ref mut sleep_drpc) = sleep_drpc_opt {
-                                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                            let _ = sleep_drpc.clear_activity();
-                                        }));
-                                    }
+                                    clear_other_activity(&mut water_drpc_opt, "Water")?;
+                                    clear_other_activity(&mut sleep_drpc_opt, "Sleep")?;
                                     // Move to next activity
                                     current_activity = get_next_activity(1, steps_enabled, water_enabled, sleep_enabled);
                                 }
@@ -496,16 +500,8 @@ fn run_triple_rpc_clients(
                                 Ok(Ok(_)) => {
                                     println!("✅ Water activity set successfully");
                                     // Clear other activities
-                                    if let Some(ref mut steps_drpc) = steps_drpc_opt {
-                                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                            let _ = steps_drpc.clear_activity();
-                                        }));
-                                    }
-                                    if let Some(ref mut sleep_drpc) = sleep_drpc_opt {
-                                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                            let _ = sleep_drpc.clear_activity();
-                                        }));
-                                    }
+                                    clear_other_activity(&mut steps_drpc_opt, "Steps")?;
+                                    clear_other_activity(&mut sleep_drpc_opt, "Sleep")?;
                                     // Move to next activity
                                     current_activity = get_next_activity(2, steps_enabled, water_enabled, sleep_enabled);
                                 }
@@ -594,16 +590,8 @@ fn run_triple_rpc_clients(
                                 Ok(Ok(_)) => {
                                     println!("✅ Sleep activity set successfully");
                                     // Clear other activities
-                                    if let Some(ref mut steps_drpc) = steps_drpc_opt {
-                                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                            let _ = steps_drpc.clear_activity();
-                                        }));
-                                    }
-                                    if let Some(ref mut water_drpc) = water_drpc_opt {
-                                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                            let _ = water_drpc.clear_activity();
-                                        }));
-                                    }
+                                    clear_other_activity(&mut steps_drpc_opt, "Steps")?;
+                                    clear_other_activity(&mut water_drpc_opt, "Water")?;
                                     // Move to next activity (back to steps)
                                     current_activity = get_next_activity(0, steps_enabled, water_enabled, sleep_enabled);
                                 }
@@ -642,8 +630,24 @@ fn run_triple_rpc_clients(
             }
         }
 
-        // Wait 60 seconds before next update
-        thread::sleep(Duration::from_secs(60));
+        // Wait 30 seconds before next update
+        thread::sleep(Duration::from_secs(30));
+    }
+}
+
+fn clear_other_activity(
+    client_opt: &mut Option<Client>,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(client) = client_opt {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.clear_activity()));
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(format!("{} Discord RPC clear_activity failed: {}", label, e).into()),
+            Err(_) => Err(format!("{} Discord RPC panic during clear_activity", label).into()),
+        }
+    } else {
+        Ok(())
     }
 }
 
@@ -759,4 +763,3 @@ fn get_day_timestamps() -> (u64, u64) {
     
     (start_timestamp, end_timestamp)
 }
-
