@@ -55,16 +55,7 @@ jobs:
 
     steps:
       - name: Install prerequisites
-        run: dnf install -y \
-          git \
-          rust \
-          cargo \
-          pkgconf-pkg-config \
-          glib2-devel \
-          gtk3-devel \
-          libappindicator-gtk3-devel \
-          libxdo-devel \
-          openssl-devel
+        run: dnf install -y git rust cargo pkgconf-pkg-config glib2-devel gtk3-devel libappindicator-gtk3-devel libxdo-devel openssl-devel
 
       - name: Checkout
         uses: actions/checkout@v4
