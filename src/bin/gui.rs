@@ -62,7 +62,10 @@ impl EnvConfig {
     fn from_kv(map: &BTreeMap<String, String>) -> Self {
         let mut cfg = Self::default();
 
-        cfg.api_url = map.get("API_URL").cloned().unwrap_or("https://steps.mayb.gay".to_string());
+        cfg.api_url = map
+            .get("API_URL")
+            .cloned()
+            .unwrap_or("https://steps.mayb.gay".to_string());
         cfg.api_token = map.get("API_TOKEN").cloned().unwrap_or_default();
 
         if let Some(v) = parse_bool(map.get("ENABLE_STEPS")) {
@@ -161,7 +164,11 @@ impl EnvConfig {
 }
 
 fn parse_bool(v: Option<&String>) -> Option<bool> {
-    let s = v?.trim().to_ascii_lowercase();
+    parse_bool_raw(v?.trim())
+}
+
+fn parse_bool_raw(v: &str) -> Option<bool> {
+    let s = v.trim().to_ascii_lowercase();
     match s.as_str() {
         "1" | "true" | "yes" | "y" | "on" => Some(true),
         "0" | "false" | "no" | "n" | "off" => Some(false),
@@ -173,14 +180,18 @@ fn bool_to_str(v: bool) -> &'static str {
     if v { "true" } else { "false" }
 }
 
+fn tray_disabled_by_env() -> bool {
+    match std::env::var("GUI_DISABLE_TRAY") {
+        Ok(v) => parse_bool_raw(&v).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 fn env_file_path() -> PathBuf {
-    // When launching from a macOS `.app`, the current dir is commonly `/`,
-    // which isn't writable. Store config in a per-user config directory instead.
     if let Some(proj_dirs) = ProjectDirs::from("com", "ThisisLogan", "StepTrackerRPC") {
         return proj_dirs.config_dir().join(".env");
     }
 
-    // Fallback (should only happen in unusual environments)
     std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".env")
@@ -199,10 +210,14 @@ fn read_env_file(path: &Path) -> Result<BTreeMap<String, String>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let key = k.trim().to_string();
         let mut val = v.trim().to_string();
-        if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+        if (val.starts_with('"') && val.ends_with('"'))
+            || (val.starts_with('\'') && val.ends_with('\''))
+        {
             val = val[1..val.len().saturating_sub(1)].to_string();
         }
         if !key.is_empty() {
@@ -236,8 +251,9 @@ fn write_env_file(path: &Path, map: &BTreeMap<String, String>) -> Result<()> {
 }
 
 fn encode_env_value(value: &str) -> String {
-    // Keep simple for most values; quote only if needed.
-    let needs_quotes = value.chars().any(|c| c.is_whitespace() || c == '#' || c == '"');
+    let needs_quotes = value
+        .chars()
+        .any(|c| c.is_whitespace() || c == '#' || c == '"');
     if !needs_quotes {
         return value.to_string();
     }
@@ -265,13 +281,11 @@ fn rpc_binary_path() -> Result<PathBuf> {
 
     let rpc_name = if cfg!(windows) { "rpc.exe" } else { "rpc" };
 
-    // Typical when running `cargo run --bin gui` or built release: sibling binary.
     let sibling = dir.join(rpc_name);
     if sibling.exists() {
         return Ok(sibling);
     }
 
-    // Fallback for running from project root with `cargo run`.
     let cwd = std::env::current_dir().context("Failed to get current dir")?;
     let debug = cwd.join("target").join("debug").join(rpc_name);
     if debug.exists() {
@@ -289,7 +303,6 @@ fn rpc_binary_path() -> Result<PathBuf> {
 }
 
 fn make_tray_icon_rgba_32() -> (Vec<u8>, u32, u32) {
-    // A tiny generated icon (no external files).
     let w = 32u32;
     let h = 32u32;
     let mut rgba = vec![0u8; (w * h * 4) as usize];
@@ -297,13 +310,11 @@ fn make_tray_icon_rgba_32() -> (Vec<u8>, u32, u32) {
     for y in 0..h {
         for x in 0..w {
             let idx = ((y * w + x) * 4) as usize;
-            // dark background
             rgba[idx] = 20;
             rgba[idx + 1] = 24;
             rgba[idx + 2] = 28;
             rgba[idx + 3] = 255;
 
-            // simple green stripe to be distinguishable
             if x > 6 && x < 26 && y > 12 && y < 20 {
                 rgba[idx] = 64;
                 rgba[idx + 1] = 200;
@@ -322,22 +333,19 @@ enum LogLine {
     System(String),
 }
 
-struct GuiApp {
-    env: EnvConfig,
-    env_path: PathBuf,
+#[derive(Debug, Clone)]
+enum TrayState {
+    Ready,
+    Unavailable { reason: String },
+}
 
-    child: Option<Child>,
-    log_rx: Option<mpsc::Receiver<LogLine>>,
-    logs: Vec<String>,
-
-    // Tray/menu state (optional, depending on platform/runtime).
-    tray: Option<tray_icon::TrayIcon>,
-    tray_ids: Option<TrayIds>,
-
-    // UI flags
-    wants_hide: bool,
-    wants_show: bool,
-    wants_quit: bool,
+#[derive(Debug, Clone, Copy)]
+enum TrayCommand {
+    Start,
+    Stop,
+    Show,
+    Hide,
+    Quit,
 }
 
 #[derive(Clone)]
@@ -349,6 +357,229 @@ struct TrayIds {
     quit: tray_icon::menu::MenuId,
 }
 
+trait TrayBackend {
+    fn state(&self) -> TrayState;
+    fn ensure_ready(&mut self) -> Option<String>;
+    fn pump_events(&mut self) -> Vec<TrayCommand>;
+}
+
+struct RealTrayBackend {
+    tray: Option<tray_icon::TrayIcon>,
+    tray_ids: Option<TrayIds>,
+    attempted_init: bool,
+    state: TrayState,
+}
+
+impl RealTrayBackend {
+    fn new() -> Self {
+        Self {
+            tray: None,
+            tray_ids: None,
+            attempted_init: false,
+            state: TrayState::Unavailable {
+                reason: "Tray has not initialized yet".to_string(),
+            },
+        }
+    }
+}
+
+impl TrayBackend for RealTrayBackend {
+    fn state(&self) -> TrayState {
+        self.state.clone()
+    }
+
+    fn ensure_ready(&mut self) -> Option<String> {
+        if self.tray.is_some() {
+            self.state = TrayState::Ready;
+            return None;
+        }
+
+        if self.attempted_init {
+            return None;
+        }
+        self.attempted_init = true;
+
+        let icon = match (|| -> Result<tray_icon::Icon> {
+            let (rgba, w, h) = make_tray_icon_rgba_32();
+            Ok(tray_icon::Icon::from_rgba(rgba, w, h)?)
+        })() {
+            Ok(icon) => icon,
+            Err(e) => {
+                let reason = format!("Tray icon unavailable (failed to build icon): {e}");
+                self.state = TrayState::Unavailable {
+                    reason: reason.clone(),
+                };
+                return Some(reason);
+            }
+        };
+
+        let tray_menu = tray_icon::menu::Menu::new();
+        let start_item = tray_icon::menu::MenuItem::new("Start RPC", true, None);
+        let stop_item = tray_icon::menu::MenuItem::new("Stop RPC", true, None);
+        let show_item = tray_icon::menu::MenuItem::new("Show window", true, None);
+        let hide_item = tray_icon::menu::MenuItem::new("Hide window", true, None);
+        let quit_item = tray_icon::menu::MenuItem::new("Quit (stops RPC)", true, None);
+
+        let submenu = match tray_icon::menu::Submenu::with_items(
+            "Step Tracker RPC",
+            true,
+            &[
+                &start_item,
+                &stop_item,
+                &tray_icon::menu::PredefinedMenuItem::separator(),
+                &show_item,
+                &hide_item,
+                &tray_icon::menu::PredefinedMenuItem::separator(),
+                &quit_item,
+            ],
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                let reason = format!("Tray menu unavailable: {e}");
+                self.state = TrayState::Unavailable {
+                    reason: reason.clone(),
+                };
+                return Some(reason);
+            }
+        };
+
+        if let Err(e) = tray_menu.append(&submenu) {
+            let reason = format!("Tray menu unavailable: {e}");
+            self.state = TrayState::Unavailable {
+                reason: reason.clone(),
+            };
+            return Some(reason);
+        }
+
+        let tray = match tray_icon::TrayIconBuilder::new()
+            .with_tooltip("Step Tracker RPC")
+            .with_menu(Box::new(tray_menu))
+            .with_icon(icon)
+            .build()
+        {
+            Ok(t) => t,
+            Err(e) => {
+                let reason = format!("Tray icon unavailable: {e}");
+                self.state = TrayState::Unavailable {
+                    reason: reason.clone(),
+                };
+                return Some(reason);
+            }
+        };
+
+        self.tray = Some(tray);
+        self.tray_ids = Some(TrayIds {
+            start: start_item.id().clone(),
+            stop: stop_item.id().clone(),
+            show: show_item.id().clone(),
+            hide: hide_item.id().clone(),
+            quit: quit_item.id().clone(),
+        });
+        self.state = TrayState::Ready;
+        Some("Tray icon ready".to_string())
+    }
+
+    fn pump_events(&mut self) -> Vec<TrayCommand> {
+        let mut out = Vec::new();
+
+        if let Some(ids) = self.tray_ids.clone() {
+            while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+                if event.id == ids.start {
+                    out.push(TrayCommand::Start);
+                } else if event.id == ids.stop {
+                    out.push(TrayCommand::Stop);
+                } else if event.id == ids.show {
+                    out.push(TrayCommand::Show);
+                } else if event.id == ids.hide {
+                    out.push(TrayCommand::Hide);
+                } else if event.id == ids.quit {
+                    out.push(TrayCommand::Quit);
+                }
+            }
+        }
+
+        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            match event {
+                tray_icon::TrayIconEvent::DoubleClick { .. } => out.push(TrayCommand::Show),
+                tray_icon::TrayIconEvent::Click {
+                    button,
+                    button_state,
+                    ..
+                } => {
+                    if button == tray_icon::MouseButton::Left
+                        && button_state == tray_icon::MouseButtonState::Down
+                    {
+                        out.push(TrayCommand::Show);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        out
+    }
+}
+
+struct NoTrayBackend {
+    state: TrayState,
+    announced: bool,
+}
+
+impl NoTrayBackend {
+    fn disabled_by_env() -> Self {
+        Self {
+            state: TrayState::Unavailable {
+                reason: "Tray disabled by GUI_DISABLE_TRAY=true".to_string(),
+            },
+            announced: false,
+        }
+    }
+
+    fn unavailable(reason: String) -> Self {
+        Self {
+            state: TrayState::Unavailable { reason },
+            announced: false,
+        }
+    }
+}
+
+impl TrayBackend for NoTrayBackend {
+    fn state(&self) -> TrayState {
+        self.state.clone()
+    }
+
+    fn ensure_ready(&mut self) -> Option<String> {
+        if self.announced {
+            return None;
+        }
+        self.announced = true;
+
+        match &self.state {
+            TrayState::Unavailable { reason } => Some(format!("Tray disabled: {reason}")),
+            TrayState::Ready => None,
+        }
+    }
+
+    fn pump_events(&mut self) -> Vec<TrayCommand> {
+        Vec::new()
+    }
+}
+
+struct GuiApp {
+    env: EnvConfig,
+    env_path: PathBuf,
+
+    child: Option<Child>,
+    log_rx: Option<mpsc::Receiver<LogLine>>,
+    logs: Vec<String>,
+
+    tray_backend: Box<dyn TrayBackend>,
+
+    wants_hide: bool,
+    wants_show: bool,
+    wants_quit: bool,
+}
+
 impl GuiApp {
     fn new() -> Self {
         let env_path = env_file_path();
@@ -357,18 +588,31 @@ impl GuiApp {
             .map(|m| EnvConfig::from_kv(&m))
             .unwrap_or_default();
 
+        let tray_backend: Box<dyn TrayBackend> = if tray_disabled_by_env() {
+            Box::new(NoTrayBackend::disabled_by_env())
+        } else {
+            Box::new(RealTrayBackend::new())
+        };
+
         Self {
             env,
             env_path,
             child: None,
             log_rx: None,
             logs: Vec::new(),
-            tray: None,
-            tray_ids: None,
+            tray_backend,
             wants_hide: false,
             wants_show: false,
             wants_quit: false,
         }
+    }
+
+    fn tray_state(&self) -> TrayState {
+        self.tray_backend.state()
+    }
+
+    fn tray_ready(&self) -> bool {
+        matches!(self.tray_state(), TrayState::Ready)
     }
 
     fn push_log(&mut self, line: LogLine) {
@@ -408,10 +652,7 @@ impl GuiApp {
         match read_env_file(&self.env_path) {
             Ok(map) => {
                 self.env = EnvConfig::from_kv(&map);
-                self.push_log(LogLine::System(format!(
-                    "Loaded {}",
-                    self.env_path.display()
-                )));
+                self.push_log(LogLine::System(format!("Loaded {}", self.env_path.display())));
             }
             Err(e) => self.push_log(LogLine::System(format!("Load failed: {e}"))),
         }
@@ -420,10 +661,7 @@ impl GuiApp {
     fn save_env(&mut self) {
         let map = self.env.to_env_map();
         match write_env_file(&self.env_path, &map) {
-            Ok(()) => self.push_log(LogLine::System(format!(
-                "Saved {}",
-                self.env_path.display()
-            ))),
+            Ok(()) => self.push_log(LogLine::System(format!("Saved {}", self.env_path.display()))),
             Err(e) => self.push_log(LogLine::System(format!("Save failed: {e}"))),
         }
     }
@@ -450,17 +688,13 @@ impl GuiApp {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Inject env vars explicitly so it works even if `.env` isn't loaded.
         for (k, v) in self.env.to_env_map() {
             cmd.env(k, v);
         }
 
         match cmd.spawn() {
             Ok(mut child) => {
-                self.push_log(LogLine::System(format!(
-                    "Started RPC: {}",
-                    rpc_path.display()
-                )));
+                self.push_log(LogLine::System(format!("Started RPC: {}", rpc_path.display())));
 
                 if let Some(stdout) = child.stdout.take() {
                     let tx2 = tx.clone();
@@ -498,148 +732,54 @@ impl GuiApp {
         }
         self.log_rx = None;
     }
-
-    fn ensure_tray(&mut self) {
-        if self.tray.is_some() {
-            return;
-        }
-
-        // Tray icon is best-effort; if creation fails we keep the GUI working.
-        let Ok(icon) = (|| -> Result<tray_icon::Icon> {
-            let (rgba, w, h) = make_tray_icon_rgba_32();
-            Ok(tray_icon::Icon::from_rgba(rgba, w, h)?)
-        })() else {
-            self.push_log(LogLine::System(
-                "Tray icon unavailable (failed to build icon)".into(),
-            ));
-            return;
-        };
-
-        let tray_menu = tray_icon::menu::Menu::new();
-
-        // On macOS, root Menu prefers only Submenu items; use a submenu everywhere to keep it consistent.
-        let start_item = tray_icon::menu::MenuItem::new("Start RPC", true, None);
-        let stop_item = tray_icon::menu::MenuItem::new("Stop RPC", true, None);
-        let show_item = tray_icon::menu::MenuItem::new("Show window", true, None);
-        let hide_item = tray_icon::menu::MenuItem::new("Hide window", true, None);
-        let quit_item = tray_icon::menu::MenuItem::new("Quit (stops RPC)", true, None);
-
-        let submenu = match tray_icon::menu::Submenu::with_items(
-            "Step Tracker RPC",
-            true,
-            &[
-                &start_item,
-                &stop_item,
-                &tray_icon::menu::PredefinedMenuItem::separator(),
-                &show_item,
-                &hide_item,
-                &tray_icon::menu::PredefinedMenuItem::separator(),
-                &quit_item,
-            ],
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                self.push_log(LogLine::System(format!("Tray menu unavailable: {e}")));
-                return;
-            }
-        };
-
-        if let Err(e) = tray_menu.append(&submenu) {
-            self.push_log(LogLine::System(format!("Tray menu unavailable: {e}")));
-            return;
-        }
-
-        let tray = match tray_icon::TrayIconBuilder::new()
-            .with_tooltip("Step Tracker RPC")
-            .with_menu(Box::new(tray_menu))
-            .with_icon(icon)
-            .build()
-        {
-            Ok(t) => t,
-            Err(e) => {
-                self.push_log(LogLine::System(format!("Tray icon unavailable: {e}")));
-                return;
-            }
-        };
-
-        self.tray = Some(tray);
-        self.tray_ids = Some(TrayIds {
-            start: start_item.id().clone(),
-            stop: stop_item.id().clone(),
-            show: show_item.id().clone(),
-            hide: hide_item.id().clone(),
-            quit: quit_item.id().clone(),
-        });
-        self.push_log(LogLine::System("Tray icon ready".into()));
-    }
-
-    fn pump_tray_events(&mut self) {
-        // Menu events:
-        if let Some(ids) = self.tray_ids.clone() {
-            while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
-                if event.id == ids.start {
-                    self.start_rpc();
-                } else if event.id == ids.stop {
-                    self.stop_rpc();
-                } else if event.id == ids.show {
-                    self.wants_show = true;
-                } else if event.id == ids.hide {
-                    self.wants_hide = true;
-                } else if event.id == ids.quit {
-                    self.wants_quit = true;
-                }
-            }
-        }
-
-        // Tray icon click events:
-        // - Windows: we get a dedicated DoubleClick event.
-        // - macOS: Click events fire; use left-button down to show.
-        // - Linux: click events are unsupported (per crate docs), but the context menu still works.
-        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-            match event {
-                tray_icon::TrayIconEvent::DoubleClick { .. } => {
-                    self.wants_show = true;
-                }
-                tray_icon::TrayIconEvent::Click {
-                    button,
-                    button_state,
-                    ..
-                } => {
-                    if button == tray_icon::MouseButton::Left
-                        && button_state == tray_icon::MouseButtonState::Down
-                    {
-                        self.wants_show = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
 }
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Create tray lazily (after the event loop is running).
-        self.ensure_tray();
-        self.pump_tray_events();
+        if let Some(msg) = self.tray_backend.ensure_ready() {
+            self.push_log(LogLine::System(msg));
 
-        // Pull logs from background threads.
+            if !self.tray_ready() && !tray_disabled_by_env() {
+                if let TrayState::Unavailable { reason } = self.tray_state() {
+                    self.tray_backend = Box::new(NoTrayBackend::unavailable(reason));
+                }
+            }
+        }
+
+        for command in self.tray_backend.pump_events() {
+            match command {
+                TrayCommand::Start => self.start_rpc(),
+                TrayCommand::Stop => self.stop_rpc(),
+                TrayCommand::Show => self.wants_show = true,
+                TrayCommand::Hide => self.wants_hide = true,
+                TrayCommand::Quit => self.wants_quit = true,
+            }
+        }
+
         loop {
             let next = self.log_rx.as_ref().and_then(|rx| rx.try_recv().ok());
             let Some(line) = next else { break };
             self.push_log(line);
         }
 
-        // If the user clicked the window close button: hide instead (keep running).
         if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.wants_hide = true;
+            if self.tray_ready() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.wants_hide = true;
+            } else {
+                self.stop_rpc();
+            }
         }
 
-        // Apply show/hide/quit requests.
         if self.wants_hide {
             self.wants_hide = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            if self.tray_ready() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else {
+                self.push_log(LogLine::System(
+                    "Hide ignored: tray unavailable, keeping window visible".into(),
+                ));
+            }
         }
         if self.wants_show {
             self.wants_show = false;
@@ -661,7 +801,11 @@ impl eframe::App for GuiApp {
             ui.horizontal(|ui| {
                 ui.heading("Step Tracker RPC");
                 ui.separator();
-                ui.label(if running { "Status: running" } else { "Status: stopped" });
+                ui.label(if running {
+                    "Status: running"
+                } else {
+                    "Status: stopped"
+                });
             });
         });
 
@@ -687,20 +831,25 @@ impl eframe::App for GuiApp {
                     self.stop_rpc();
                 }
                 ui.separator();
-                if ui.button("Hide (keep running)").clicked() {
+                if ui
+                    .add_enabled(self.tray_ready(), egui::Button::new("Hide (keep running)"))
+                    .clicked()
+                {
                     self.wants_hide = true;
                 }
             });
 
             ui.add_space(10.0);
 
-            egui::CollapsingHeader::new("API").default_open(true).show(ui, |ui| {
-                ui.label("API_URL");
-                ui.text_edit_singleline(&mut self.env.api_url);
-                ui.add_space(4.0);
-                ui.label("API_TOKEN");
-                ui.add(egui::TextEdit::singleline(&mut self.env.api_token).password(true));
-            });
+            egui::CollapsingHeader::new("API")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.label("API_URL");
+                    ui.text_edit_singleline(&mut self.env.api_url);
+                    ui.add_space(4.0);
+                    ui.label("API_TOKEN");
+                    ui.add(egui::TextEdit::singleline(&mut self.env.api_token).password(true));
+                });
 
             ui.add_space(8.0);
             egui::CollapsingHeader::new("Steps Rich Presence")
@@ -760,11 +909,17 @@ impl eframe::App for GuiApp {
                 });
 
             ui.add_space(6.0);
-            ui.small(format!(
-                "Env file: {}",
-                self.env_path.to_string_lossy()
-            ));
-            ui.small("Tip: closing the window hides it; use the tray icon menu to show/quit.");
+            ui.small(format!("Env file: {}", self.env_path.to_string_lossy()));
+
+            match self.tray_state() {
+                TrayState::Ready => {
+                    ui.small("Tray: active (close hides window; reopen from tray).");
+                }
+                TrayState::Unavailable { reason } => {
+                    ui.small(format!("Tray: unavailable ({reason})"));
+                    ui.small("Window close exits cleanly when tray is unavailable.");
+                }
+            }
         });
 
         ctx.request_repaint_after(Duration::from_millis(200));
@@ -787,4 +942,94 @@ fn main() -> Result<()> {
     .map_err(|e| anyhow!("Failed to start GUI: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_env_value, parse_bool_raw, read_env_file, write_env_file, GuiApp, TrayState};
+    use once_cell::sync::Lazy;
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::PathBuf,
+        sync::Mutex,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    #[test]
+    fn parse_bool_raw_accepts_supported_values() {
+        assert_eq!(parse_bool_raw("true"), Some(true));
+        assert_eq!(parse_bool_raw("YES"), Some(true));
+        assert_eq!(parse_bool_raw("1"), Some(true));
+        assert_eq!(parse_bool_raw("off"), Some(false));
+        assert_eq!(parse_bool_raw("No"), Some(false));
+        assert_eq!(parse_bool_raw("0"), Some(false));
+        assert_eq!(parse_bool_raw("maybe"), None);
+    }
+
+    #[test]
+    fn encode_env_value_quotes_when_needed() {
+        assert_eq!(encode_env_value("plain_value"), "plain_value");
+        assert_eq!(encode_env_value("value with spaces"), "\"value with spaces\"");
+        assert_eq!(encode_env_value("hash#value"), "\"hash#value\"");
+        assert_eq!(
+            encode_env_value("quote\"value"),
+            "\"quote\\\"value\""
+        );
+    }
+
+    #[test]
+    fn read_write_env_file_round_trip() {
+        let test_dir = unique_temp_dir();
+        fs::create_dir_all(&test_dir).expect("failed to create test directory");
+
+        let env_path = test_dir.join(".env");
+        let mut data = BTreeMap::new();
+        data.insert("API_URL".to_string(), "https://example.com".to_string());
+        data.insert("API_TOKEN".to_string(), "token123".to_string());
+        data.insert("ENABLE_STEPS".to_string(), "true".to_string());
+        data.insert("OBS_STEPS_FILE".to_string(), "/tmp/steps.txt".to_string());
+        data.insert("EMPTY_VALUE".to_string(), "   ".to_string());
+
+        write_env_file(&env_path, &data).expect("failed to write env file");
+        let loaded = read_env_file(&env_path).expect("failed to read env file");
+
+        assert_eq!(loaded.get("API_URL").map(String::as_str), Some("https://example.com"));
+        assert_eq!(loaded.get("API_TOKEN").map(String::as_str), Some("token123"));
+        assert_eq!(loaded.get("ENABLE_STEPS").map(String::as_str), Some("true"));
+        assert_eq!(
+            loaded.get("OBS_STEPS_FILE").map(String::as_str),
+            Some("/tmp/steps.txt")
+        );
+        assert!(!loaded.contains_key("EMPTY_VALUE"));
+
+        fs::remove_dir_all(test_dir).expect("failed to remove test directory");
+    }
+
+    #[test]
+    fn gui_startup_smoke_test_no_tray() {
+        let _lock = ENV_LOCK.lock().expect("failed to lock env mutex");
+        std::env::set_var("GUI_DISABLE_TRAY", "true");
+
+        let app = GuiApp::new();
+        assert!(!app.tray_ready());
+        assert!(matches!(
+            app.tray_state(),
+            TrayState::Unavailable { .. }
+        ));
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "step-tracker-rpc-gui-tests-{}-{}",
+            std::process::id(),
+            timestamp
+        ))
+    }
 }

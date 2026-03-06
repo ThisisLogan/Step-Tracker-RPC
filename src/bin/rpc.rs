@@ -763,3 +763,26 @@ fn get_day_timestamps() -> (u64, u64) {
     
     (start_timestamp, end_timestamp)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{format_number, format_sleep_minutes};
+
+    #[test]
+    fn format_sleep_minutes_handles_hours_and_minutes() {
+        assert_eq!(format_sleep_minutes(0), "0m");
+        assert_eq!(format_sleep_minutes(45), "45m");
+        assert_eq!(format_sleep_minutes(60), "1h");
+        assert_eq!(format_sleep_minutes(61), "1h 1m");
+        assert_eq!(format_sleep_minutes(130), "2h 10m");
+    }
+
+    #[test]
+    fn format_number_handles_thresholds() {
+        assert_eq!(format_number(999), "999");
+        assert_eq!(format_number(1_000), "1.00K");
+        assert_eq!(format_number(12_345), "12.35K");
+        assert_eq!(format_number(1_000_000), "1.00M");
+        assert_eq!(format_number(2_500_000), "2.50M");
+    }
+}
