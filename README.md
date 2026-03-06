@@ -1,157 +1,222 @@
 # Step Tracker RPC
 
-A Discord Rich Presence application that displays your daily, monthly, and yearly step counts in real-time on your Discord profile.
+Step Tracker RPC is a Rust project with two binaries:
 
-## Features
+- `rpc`: console process that polls your API and updates Discord Rich Presence
+- `gui`: desktop controller for editing config and starting/stopping `rpc`
 
-- 📊 Real-time step count display on Discord
-- 📅 Daily, monthly, and yearly step tracking
-- 🔄 Automatic updates every 30 seconds
-- 🔁 Automatic reconnection on connection loss
-- ⚙️ Configurable via environment variables
+The Rich Presence rotates between enabled activities:
 
-## Prerequisites
+- Steps
+- Water
+- Sleep
 
-- Rust (latest stable version recommended)
-- Discord desktop app (for Rich Presence to work)
-- API access token from your step tracking service
+## Project layout
 
-## Installation
+- `src/bin/rpc.rs`: polling, formatting, Discord RPC updates, OBS text file writes
+- `src/bin/gui.rs`: desktop UI, tray integration, `.env` management, process control for `rpc`
+- `src/models.rs`: shared API DTOs
+- `.github/workflows/ci.yml`: cross-OS CI test workflow
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/ThisisLogan/Step-Tracker-RPC.git
-   cd Step-Tracker-RPC
-   ```
+## Requirements
 
-2. Build the project:
-   ```bash
-   cargo build --release
-   ```
+- Rust stable toolchain
+- Discord desktop app running locally
+- API token for your step tracker backend
 
-## Configuration
+For GUI builds on Linux, native packages are required (GTK/AppIndicator/XDo/OpenSSL dev packages).
 
-1. Create a `.env` file in the project root:
-   ```bash
-   cp .env.example .env
-   ```
+## Required system packages
 
-2. Edit the `.env` file with your configuration:
-   ```env
-   # Required
-   API_URL=https://steps.wlling.net
-   API_TOKEN=your_api_token_here
+`rpc` only:
 
-   # Enable/disable each Rich Presence (defaults: true)
-   ENABLE_STEPS=true
-   ENABLE_WATER=true
-   ENABLE_SLEEP=true
+- No extra native desktop packages are required beyond Rust toolchain/runtime.
 
-   # Steps RPC (required if ENABLE_STEPS=true)
-   STEPS_DISCORD_CLIENT_ID=1428159322432471223
-   STEPS_DISCORD_LARGE_IMAGE_KEY=man_walking_emoji_copy
+`gui` on Linux:
 
-   # Water RPC (required if ENABLE_WATER=true)
-   WATER_DISCORD_CLIENT_ID=123456789012345678
-   WATER_DISCORD_LARGE_IMAGE_KEY=water_icon_key
+- Requires native GUI/linker dependencies in addition to Rust.
 
-   # Sleep RPC (required if ENABLE_SLEEP=true)
-   SLEEP_DISCORD_CLIENT_ID=123456789012345678
-   SLEEP_DISCORD_LARGE_IMAGE_KEY=sleep_icon_key
+Ubuntu/Debian package set (matches CI):
 
-   # Optional: write output files for OBS/text sources
-   # OBS_STEPS_FILE=/path/to/steps.txt
-   # OBS_WATER_FILE=/path/to/water.txt
-   # OBS_SLEEP_FILE=/path/to/sleep.txt
-   ```
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  pkg-config \
+  libglib2.0-dev \
+  libgtk-3-dev \
+  libayatana-appindicator3-dev \
+  libxdo-dev \
+  libssl-dev
+```
 
-### Environment Variables
+Fedora package set (matches CI):
 
-- **`API_URL`** (required): The base URL of your step tracking API
-- **`API_TOKEN`** (required): Your API authentication token
-- **`ENABLE_STEPS`** (optional): `true`/`false` (default: `true`)
-- **`ENABLE_WATER`** (optional): `true`/`false` (default: `true`)
-- **`ENABLE_SLEEP`** (optional): `true`/`false` (default: `true`)
-- **`STEPS_DISCORD_CLIENT_ID`**: Discord application client ID for steps (u64)
-- **`STEPS_DISCORD_LARGE_IMAGE_KEY`**: Steps large image key
-- **`WATER_DISCORD_CLIENT_ID`**: Discord application client ID for water (u64)
-- **`WATER_DISCORD_LARGE_IMAGE_KEY`**: Water large image key
-- **`SLEEP_DISCORD_CLIENT_ID`**: Discord application client ID for sleep (u64)
-- **`SLEEP_DISCORD_LARGE_IMAGE_KEY`**: Sleep large image key
-- **`OBS_STEPS_FILE`** (optional): path to write steps text output for OBS
-- **`OBS_WATER_FILE`** (optional): path to write water text output for OBS
-- **`OBS_SLEEP_FILE`** (optional): path to write sleep text output for OBS
+```bash
+sudo dnf install -y \
+  git \
+  rust \
+  cargo \
+  pkgconf-pkg-config \
+  glib2-devel \
+  gtk3-devel \
+  libappindicator-gtk3-devel \
+  libxdo-devel \
+  openssl-devel
+```
 
-## Usage
+Notes:
 
-Run the RPC (console):
+- `libxdo-*` resolves linker errors like `unable to find library -lxdo`.
+- `openssl*-devel` resolves `openssl-sys` discovery/build errors.
+- macOS/Windows usually do not need extra package-manager installs for this project beyond standard Rust toolchains.
+
+## Build and run
+
+Run console RPC:
+
 ```bash
 cargo run --bin rpc
 ```
 
-Run the GUI (cross-platform):
+Run GUI:
+
 ```bash
-cargo run --bin gui
+cargo run --features gui --bin gui
 ```
 
-The GUI can:
-- Edit and save a local `.env`
-- Start/stop the `rpc` process
-- Hide to run in the background (closing the window hides it; use the tray icon menu to show/quit)
+Build release binaries:
 
-The application will:
-1. Connect to your Discord client
-2. Fetch step data from the API every 30 seconds
-3. Update your Discord Rich Presence status with:
-   - **Details**: Today's step count
-   - **State**: Monthly and yearly step counts
-   - **Timestamps**: Start and end of the current day
-
-## How It Works
-
-The application:
-- Connects to Discord via the Discord RPC protocol
-- Periodically fetches step summary data from your configured API endpoint
-- Formats and displays the data in your Discord profile
-- Automatically reconnects if the connection is lost
-
-## API Endpoint
-
-The application expects an API endpoint at:
-```
-GET {API_URL}/api/steps/summary?token={API_TOKEN}
+```bash
+cargo build --release --bin rpc
+cargo build --release --features gui --bin gui
 ```
 
-The endpoint should return JSON in the following format:
-```json
-{
-  "daily": 12345,
-  "monthly": 234567,
-  "yearly": 1234567
-}
+## Configuration
+
+### `rpc` config source
+
+`rpc` loads environment variables with `dotenv` (from the process working directory).
+
+### `gui` config file location
+
+`gui` reads/writes a `.env` at:
+
+- Project dirs path: `com/ThisisLogan/StepTrackerRPC/.env` (OS-specific config directory)
+- Fallback: current working directory `.env`
+
+You can edit and save values directly in the GUI.
+
+### Environment variables
+
+Required:
+
+- `API_URL`
+- `API_TOKEN`
+
+Feature toggles (default `true`):
+
+- `ENABLE_STEPS`
+- `ENABLE_WATER`
+- `ENABLE_SLEEP`
+
+Discord app config:
+
+- `STEPS_DISCORD_CLIENT_ID`
+- `STEPS_DISCORD_LARGE_IMAGE_KEY`
+- `WATER_DISCORD_CLIENT_ID`
+- `WATER_DISCORD_LARGE_IMAGE_KEY`
+- `SLEEP_DISCORD_CLIENT_ID`
+- `SLEEP_DISCORD_LARGE_IMAGE_KEY`
+
+Optional OBS/text output files:
+
+- `OBS_STEPS_FILE`
+- `OBS_WATER_FILE`
+- `OBS_SLEEP_FILE`
+
+Optional GUI/tray behavior:
+
+- `GUI_DISABLE_TRAY=true` to force no-tray mode
+
+## API expectations
+
+`rpc` calls:
+
+- `GET {API_URL}/api/steps/summary?token={API_TOKEN}`
+- `GET {API_URL}/api/water/summary?token={API_TOKEN}`
+- `GET {API_URL}/api/sleep/summary?token={API_TOKEN}&date={YYYY-MM-DD}`
+
+Response models are defined in `src/models.rs`:
+
+- `StepsSummaryResponse`
+- `WaterSummaryResponse`
+- `SleepResponse`
+- `ErrorResponse`
+
+## Runtime behavior
+
+- Creates one Discord RPC client per enabled activity.
+- Cycles display in order: Steps -> Water -> Sleep (skips disabled entries).
+- Sleeps for 30 seconds after each activity update attempt.
+- Reconnects Discord RPC clients on connection/panic signals.
+- If all activities are disabled, it idles and sleeps.
+
+## OBS file output
+
+If configured, the process writes plain text files:
+
+- Steps: today/monthly/yearly (abbreviated numbers)
+- Water: today/monthly/yearly display strings from API
+- Sleep: today value formatted as `xh ym`
+
+Parent directories are created automatically.
+
+## GUI behavior
+
+- Load/save `.env`
+- Start/stop `rpc` child process
+- Show process logs in-app
+- Tray icon/menu (best effort)
+  - Close window hides to tray when tray is available
+  - If tray is unavailable, close exits and stops RPC cleanly
+
+## Testing
+
+Current tests include:
+
+- `src/bin/rpc.rs`
+  - `format_sleep_minutes`
+  - `format_number`
+- `src/bin/gui.rs`
+  - bool parsing
+  - env value encoding
+  - env read/write round-trip
+  - no-tray GUI startup smoke test
+
+Run tests locally:
+
+```bash
+cargo test --bin rpc
+cargo test --features gui --bin gui
 ```
 
-## Troubleshooting
+## CI
 
-### Discord Rich Presence not showing
-- Make sure Discord desktop app is running (not the web version)
-- Check that your Discord client ID is correct
-- Verify the Discord RPC connection in the console output
+GitHub Actions workflow `.github/workflows/ci.yml` runs a single matrix card:
 
-### API connection errors
-- Verify your `API_URL` and `API_TOKEN` are correct in the `.env` file
-- Check that the API endpoint is accessible
-- Review error messages in the console output
+- `ubuntu-latest`
+- `macos-latest`
+- `windows-latest`
+- `fedora-latest` (via Docker on Ubuntu runner)
 
-### Connection lost errors
-- The application will automatically attempt to reconnect
-- If issues persist, restart the application
+Each entry runs:
+
+- `cargo check --bin rpc`
+- `cargo test --bin rpc`
+- `cargo test --features gui --bin gui`
+
+Linux entries install required system packages before GUI tests.
 
 ## License
 
-See [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
+See [LICENSE](LICENSE).
